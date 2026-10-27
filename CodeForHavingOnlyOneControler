@@ -1,0 +1,168 @@
+#include <Bluepad32.h>
+#include <ESP32Servo.h>
+#include <esp_now.h>
+#include <WiFi.h>
+
+// ==========================================
+// TARGET MAC ADDRESS (BOARD 2)
+// REPLACE WITH YOUR BOARD 2 MAC ADDRESS!
+// ==========================================
+// CORRECT:
+uint8_t receiverMacAddress[] = {0xAC, 0x27, 0x6E, 0x7F, 0x30, 0xB0};
+
+// Data Structure to send to Board 2
+typedef struct struct_message {
+    bool r1;
+    bool l1;
+    int axisRX;
+    int axisRY;
+} struct_message;
+
+struct_message controlData;
+esp_now_peer_info_t peerInfo;
+
+// Local Servo Declarations
+Servo myServo1;     // D0: 180 Servo
+Servo turnServo1;   // D1: 180 Servo
+Servo d2Servo1;     // D2: 180 Servo
+Servo driveServo1;  // D3: 360 Servo (Left Stick Y)
+Servo steerServo1;  // D4: 360 Servo (Left Stick X)
+
+const int SERVO_PIN_1       = D0;      
+const int TURN_SERVO_PIN_1  = D1; 
+const int D2_SERVO_PIN_1    = D2;   
+const int DRIVE_SERVO_PIN_1 = D3; 
+const int STEER_SERVO_PIN_1 = D4; 
+
+const int DEADZONE = 80; 
+ControllerPtr myControllers[BP32_MAX_GAMEPADS];
+
+void processGamepad(ControllerPtr ctl);
+void onConnectedController(ControllerPtr ctl);
+void onDisconnectedController(ControllerPtr ctl);
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+
+    // 1. Allocate PWM Timers
+    ESP32PWM::allocateTimer(0);
+    ESP32PWM::allocateTimer(1);
+    ESP32PWM::allocateTimer(2);
+    ESP32PWM::allocateTimer(3);
+
+    myServo1.setPeriodHertz(50);
+    turnServo1.setPeriodHertz(50);
+    d2Servo1.setPeriodHertz(50);
+    driveServo1.setPeriodHertz(50);
+    steerServo1.setPeriodHertz(50);
+
+    myServo1.attach(SERVO_PIN_1); 
+    turnServo1.attach(TURN_SERVO_PIN_1);
+    d2Servo1.attach(D2_SERVO_PIN_1);
+    driveServo1.attach(DRIVE_SERVO_PIN_1);
+    steerServo1.attach(STEER_SERVO_PIN_1);
+
+    myServo1.write(0);      
+    turnServo1.write(90);   
+    d2Servo1.write(180);    
+    driveServo1.write(90);  
+    steerServo1.write(90);  
+
+    // 2. Initialize ESP-NOW
+    WiFi.mode(WIFI_STA);
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("Error initializing ESP-NOW");
+        return;
+    }
+
+    memcpy(peerInfo.peer_addr, receiverMacAddress, 6);
+    peerInfo.channel = 0;  
+    peerInfo.encrypt = false;
+
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+        Serial.println("Failed to add peer");
+        return;
+    }
+
+    // 3. Initialize Bluepad32
+    BP32.setup(&onConnectedController, &onDisconnectedController);
+    Serial.println(">>> Board 1 Master Ready. Waiting for controller... <<<");
+}
+
+void loop() {
+    BP32.update();
+
+    for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+        ControllerPtr myCtl = myControllers[i];
+        if (myCtl && myCtl->isConnected()) {
+            processGamepad(myCtl);
+        }
+    }
+    
+    delay(10);
+}
+
+void onConnectedController(ControllerPtr ctl) {
+    for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+        if (myControllers[i] == nullptr) {
+            Serial.printf(">> Controller connected at index %d <<\n", i);
+            myControllers[i] = ctl;
+            break;
+        }
+    }
+}
+
+void onDisconnectedController(ControllerPtr ctl) {
+    for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+        if (myControllers[i] == ctl) {
+            myControllers[i] = nullptr;
+            break;
+        }
+    }
+}
+
+void processGamepad(ControllerPtr ctl) {
+    // --- 1. LOCAL SERVOS (Triggers & Left Stick) ---
+    if (ctl->r2() || ctl->throttle() > 100) {
+        myServo1.write(60);      
+        d2Servo1.write(180);
+        turnServo1.write(180);
+    } 
+    else if (ctl->l2() || ctl->brake() > 100) {
+        myServo1.write(0);       
+        d2Servo1.write(100);
+        turnServo1.write(0);
+    } 
+    else {
+        myServo1.write(0);       
+        d2Servo1.write(180); 
+        turnServo1.write(90);     
+    }
+
+    int axisY1 = ctl->axisY(); 
+    if (axisY1 < -DEADZONE) {
+        driveServo1.write(0);    
+    } else if (axisY1 > DEADZONE) {
+        driveServo1.write(180);  
+    } else {
+        driveServo1.write(90);   
+    }
+
+    int axisX1 = ctl->axisX();
+    if (axisX1 < -DEADZONE) {
+        steerServo1.write(180);  
+    } else if (axisX1 > DEADZONE) {
+        steerServo1.write(0);    
+    } else {
+        steerServo1.write(90);   
+    }
+
+    // --- 2. PACKET TRANSMISSION TO BOARD 2 ---
+    controlData.r1 = ctl->r1();
+    controlData.l1 = ctl->l1();
+    controlData.axisRX = ctl->axisRX();
+    controlData.axisRY = ctl->axisRY();
+
+    esp_now_send(receiverMacAddress, (uint8_t *) &controlData, sizeof(controlData));
+}
