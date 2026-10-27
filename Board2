@@ -1,0 +1,111 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <ESP32Servo.h>
+
+// Struct matching Board 1's packet format
+typedef struct struct_message {
+    bool r1;
+    bool l1;
+    int axisRX;
+    int axisRY;
+} struct_message;
+
+struct_message incomingData;
+
+// Servos on Board 2
+Servo myServo1;     // D7: 180 Servo (R1 Bumper)
+Servo turnServo1;   // D8: 180 Servo (R1 / L1 Bumpers)
+Servo d2Servo1;     // D0: 180 Servo (L1 Bumper)
+Servo driveServo1;  // D1: 360 Servo (Right Stick Up/Down)
+Servo steerServo1;  // D2: 360 Servo (Right Stick Left/Right)
+
+const int SERVO_PIN_2       = D7;      
+const int TURN_SERVO_PIN_2  = D8; 
+const int D7_SERVO_PIN_2    = D0;   
+const int DRIVE_SERVO_PIN_1 = D2; 
+const int STEER_SERVO_PIN_1 = D1; 
+
+const int DEADZONE = 80;
+
+// FIXED: Standard ESP-NOW Receive Callback Signature
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingDataPtr, int len) {
+    memcpy(&incomingData, incomingDataPtr, sizeof(incomingData));
+
+    // 1. Process Bumpers
+    if (incomingData.r1) {
+        myServo1.write(60);      
+        d2Servo1.write(180);
+        turnServo1.write(180);
+    } 
+    else if (incomingData.l1) {
+        myServo1.write(0);       
+        d2Servo1.write(140);
+        turnServo1.write(0);
+    } 
+    else {
+        myServo1.write(0);       
+        d2Servo1.write(180); 
+        turnServo1.write(90);     
+    }
+
+    // 2. Process Right Stick Y-Axis Drive (D1)
+    if (incomingData.axisRY < -DEADZONE) {
+        driveServo1.write(0);    
+    } else if (incomingData.axisRY > DEADZONE) {
+        driveServo1.write(180);  
+    } else {
+        driveServo1.write(90);   
+    }
+
+    // 3. Process Right Stick X-Axis Steer (D2)
+    if (incomingData.axisRX < -DEADZONE) {
+        steerServo1.write(180);  
+    } else if (incomingData.axisRX > DEADZONE) {
+        steerServo1.write(0);    
+    } else {
+        steerServo1.write(90);   
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+
+    // Allocate Timers cleanly
+    ESP32PWM::allocateTimer(0);
+    ESP32PWM::allocateTimer(1);
+    ESP32PWM::allocateTimer(2);
+    ESP32PWM::allocateTimer(3);
+
+    myServo1.setPeriodHertz(50);
+    turnServo1.setPeriodHertz(50);
+    d2Servo1.setPeriodHertz(50);
+    driveServo1.setPeriodHertz(50);
+    steerServo1.setPeriodHertz(50);
+
+    myServo1.attach(SERVO_PIN_2); 
+    turnServo1.attach(TURN_SERVO_PIN_2);
+    d2Servo1.attach(D7_SERVO_PIN_2);
+    driveServo1.attach(DRIVE_SERVO_PIN_1);
+    steerServo1.attach(STEER_SERVO_PIN_1);
+
+    myServo1.write(0);      
+    turnServo1.write(90);   
+    d2Servo1.write(180);    
+    driveServo1.write(90);  
+    steerServo1.write(90);  
+
+    // Init Wi-Fi & ESP-NOW
+    WiFi.mode(WIFI_STA);
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("Error initializing ESP-NOW");
+        return;
+    }
+
+    esp_now_register_recv_cb(OnDataRecv);
+    Serial.println(">>> Board 2 Slave Ready. Listening for ESP-NOW commands... <<<");
+}
+
+void loop() {
+    delay(100);
+}
