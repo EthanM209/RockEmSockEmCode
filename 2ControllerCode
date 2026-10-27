@@ -1,0 +1,138 @@
+//note change the pin definitions for second ESP32 befor pushing since its wired differently
+
+#include <Bluepad32.h>
+#include <ESP32Servo.h>
+
+// Initialize Servo objects
+Servo myServo;      // D0: 180 Servo (0° idle -> 90° active)
+Servo turnServo;    // D1: 180 Servo (90° idle -> 180° active)
+Servo d2Servo;      // D2: 180 Servo (180° idle -> 90° active)
+Servo driveServo;   // D3: 360 Continuous Servo (Forward / Backward)
+Servo steerServo;   // D4: 360 Continuous Servo (Left / Right)
+
+// Pin Definitions (XIAO ESP32C3)
+const int SERVO_PIN = D0;     
+const int D2_SERVO_PIN = D1; 
+const int TURN_SERVO_PIN = D2;    
+const int DRIVE_SERVO_PIN = D3; 
+const int STEER_SERVO_PIN = D4; 
+
+// Joystick Deadzone threshold to ignore small stick drifts
+const int DEADZONE = 80; 
+
+ControllerPtr myControllers[BP32_MAX_GAMEPADS];
+
+// Callback when a controller connects
+void onConnectedController(ControllerPtr ctl) {
+    for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+        if (myControllers[i] == nullptr) {
+            Serial.printf("Controller connected at index %d\n", i);
+            myControllers[i] = ctl;
+            break;
+        }
+    }
+}
+
+// Callback when a controller disconnects
+void onDisconnectedController(ControllerPtr ctl) {
+    for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+        if (myControllers[i] == ctl) {
+            Serial.printf("Controller disconnected from index %d\n", i);
+            myControllers[i] = nullptr;
+            break;
+        }
+    }
+}
+
+void processGamepad(ControllerPtr ctl) {
+    // --- 1. RIGHT TRIGGER CONTROLS (D0 & D1 Servos) ---
+    if (ctl->r2() || ctl->throttle() > 100) {
+        myServo.write(60);      // D0 moves to 90°
+        turnServo.write(180);   // D1 moves to 180°
+    } else {
+        myServo.write(0);       // D0 returns to 0°
+        turnServo.write(90);    // D1 returns to 90°
+    }
+
+    // --- 2. LEFT TRIGGER CONTROLS (D2 Servo) ---
+    // Checks both digital L2 button state and analog brake depth
+    if (ctl->l2() || ctl->brake() > 100) {
+        d2Servo.write(120);
+        turnServo.write(0);      // D2 moves to 90° when L2 pressed
+    } else {
+        d2Servo.write(180);     // D2 returns to 180° when L2 released
+        turnServo.write(90);    
+    }
+
+    // --- 3. LEFT JOYSTICK Y-AXIS (D3 Drive Servo: Forward / Backward) ---
+    int axisY = ctl->axisY(); 
+    
+    if (axisY < -DEADZONE) {
+        driveServo.write(180);  // Forward
+    } else if (axisY > DEADZONE) {
+        driveServo.write(0);    // Reverse
+    } else {
+        driveServo.write(90);   // Stop
+    }
+
+    // --- 4. LEFT JOYSTICK X-AXIS (D4 Steer Servo: Left / Right) ---
+    int axisX = ctl->axisX();
+    
+    if (axisX < -DEADZONE) {
+        steerServo.write(0);    // Spin Left
+    } else if (axisX > DEADZONE) {
+        steerServo.write(180);  // Spin Right
+    } else {
+        steerServo.write(90);   // Stop
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    // Allow allocation of timers for ESP32Servo
+    ESP32PWM::allocateTimer(0);
+    ESP32PWM::allocateTimer(1);
+    ESP32PWM::allocateTimer(2);
+    ESP32PWM::allocateTimer(3);
+    
+    // Set standard 50Hz frequency for all servos
+    myServo.setPeriodHertz(50);
+    turnServo.setPeriodHertz(50);
+    d2Servo.setPeriodHertz(50);
+    driveServo.setPeriodHertz(50);
+    steerServo.setPeriodHertz(50);
+    
+    // Attach servos to GPIO pins
+    myServo.attach(SERVO_PIN); 
+    turnServo.attach(TURN_SERVO_PIN);
+    d2Servo.attach(D2_SERVO_PIN);
+    driveServo.attach(DRIVE_SERVO_PIN);
+    steerServo.attach(STEER_SERVO_PIN);
+
+    // Set initial positions/states on boot
+    myServo.write(0);      // D0 starts at 0°
+    turnServo.write(90);   // D1 starts at 90°
+    d2Servo.write(180);    // D2 starts at 180°
+    driveServo.write(90);  // D3 continuous servo stopped
+    steerServo.write(90);  // D4 continuous servo stopped
+
+    Serial.println("Servos initialized. Connecting Bluetooth controller...");
+
+    // Initialize Bluepad32 callbacks
+    BP32.setup(&onConnectedController, &onDisconnectedController);
+}
+
+void loop() {
+    // Poll controller events
+    BP32.update();
+
+    for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
+        ControllerPtr myCtl = myControllers[i];
+        if (myCtl && myCtl->isConnected() && myCtl->isGamepad()) {
+            processGamepad(myCtl);
+        }
+    }
+    
+    delay(10);
+}
